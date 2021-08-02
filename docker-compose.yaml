@@ -1,0 +1,66 @@
+version: '3'
+
+# docker-compose build; docker-compose up -d docker-compose.yaml
+# Then check the logs with
+# docker logs --tail 50 $service_namee
+# docker-compose images
+# docker-compose logs --tail 20 service_namee
+
+services:
+  mongo:
+    image: mongo
+    restart: always
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: password
+    networks:
+      - recipes-net
+    volumes:
+      - ./data:/data/db
+
+  dev:
+    container_name: dev
+    environment:
+      MONGO_APP_USERNAME: cook
+      MONGO_APP_PASSWORD: bottlewasher
+    volumes:
+      - .:/opt/app-root/src/recipe-crawler
+      - ../recipe-scrapers:/opt/app-root/src/recipe-scrapers
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    depends_on:
+      - mongo
+    networks:
+      - recipes-net
+    entrypoint:
+      /opt/app-root/src/recipe-crawler/crawler_start.sh
+    links:
+      - mongo
+
+      #    entrypoint:
+      #      python3 /opt/app-root/src/allrecipes-crawler/do_thing.py /opt/app-root/src/allrecipes-crawler/docker-compose.yaml-23-skidoo ABC
+          # watchmedo auto-restart --recursive --pattern="*.py" --directory="." python3 /opt/app-root/src/allrecipes-crawler/do_thing.py /opt/app-root/src/allrecipes-crawler/docker-compose.yaml-23-skidoo ABC
+
+  prod:
+    container_name: crawler
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: prod
+    depends_on:
+      - mongo
+    networks:
+      - recipes-net
+#    volumes:
+#      - ./:/opt/app-root/src/app
+    command:
+#      python3 /opt/app-root/src/app/do_thing.py /opt/app-root/src/app/docker-compose.yaml-23-skidoo ABC
+      python3 -c 'import sys; print("\n".join(sys.modules))' >> /tmp/python_mods.log
+    links:
+      - mongo
+
+networks:
+  recipes-net:
+    driver: bridge
