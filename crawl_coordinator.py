@@ -2,8 +2,9 @@ import multiprocessing.dummy as mp
 import random
 import re
 import requests
+from requests.packages.urllib3.util import Url
 import sys
-from typing import List
+from typing import List, Callable
 from threading import Thread, Lock
 
 mutex = Lock()
@@ -16,24 +17,32 @@ from recipe_scrapers._abstract import AbstractScraper
 
 # https://www.madelyneriksen.com/blog/simple-concurrency-python-multiprocessing
 
-class CrawlCoordinator:
-    DISCOVERY_CLIENT_THREADS = 4
-    DISCOVERY_SINK_THREADS = 1
+THREADS_DISCOVERY_HTTP_CLIENT = 1
+THREADS_FETCH_HTTP_DOC = 1
 
-    def __init__(self, scraper_classes: List[type(AbstractScraper)]):
+
+class CrawlCoordinator:
+
+    def __init__(self,
+                 scraper_classes: List[type(AbstractScraper)],
+                 should_process_recipe: Callable[[Url], None],
+                 process_recipe: Callable[[Url], bool],
+                 ):
         self.scraper_classes = scraper_classes
         self.store = RecipeStore()
 
     def start(self):
-        self._start_discovery()
+        self._run_discovery()
+        self._run_retrieval()
 
-    def _start_discovery(self):
+    def _run_discovery(self):
         # site_explorers = [RecipeSiteUrlIterator(klass)
         #                   for klass in self.scraper_classes]
         # sites_completed = 0
         urls_counted = 0
 
-        with mp.Pool(4*len(self.scraper_classes)) as dpool:
+        with mp.Pool(
+                THREADS_FETCH_HTTP_DOC * len(self.scraper_classes)) as dpool:
             RECIPE_ID_REGEX = re.compile(r".*/recipe/(\d+)/[a-z0-9_\-.]+/?$",
                                          re.I)
             found_ids = []
@@ -48,18 +57,16 @@ class CrawlCoordinator:
                     print("_start_discovery ...1 ", str(item))
                     while True:
                         # print("_start_discovery ...2")
-                        a_recipe_uri = next(item)
-                        if not a_recipe_uri:
+                        recipe_permalink = next(item)
+                        if not recipe_permalink:
                             continue
-                        recipe_id = RECIPE_ID_REGEX.match(a_recipe_uri).groups()[0]
+                        recipe_id = RECIPE_ID_REGEX.match(
+                            str(recipe_permalink)).groups()[0]
                         mutex.acquire()
                         try:
-                            recipe = scrape_me(a_recipe_uri)
-                            # r = requests.get(a_recipe_uri)
-                            # if r.ok:
-                            #     print(f"{a_recipe_uri} - {len(r.text)}")
-                            recipe_dumpus = json.dumps(recipe.to_dict())
-                            print(f"{a_recipe_uri} - {recipe_dumpus}\n\n")
+                            # recipe = scrape_me(str(recipe_permalink))
+                            # recipe_dumpus = json.dumps(recipe.to_dict())
+                            print(f"Fetched JSON: {recipe_permalink}")
                             found_ids.append(int(recipe_id))
                             urls_counted += 1
                             # print("_start_discovery ...3 " +
@@ -83,12 +90,11 @@ class CrawlCoordinator:
 
     @classmethod
     def discovery_runner(cls, scraper_class):
-        def choose(x):
-            return True
-            # yes = random.random() > 0.6666
-            # return yes
+        def choose(recipe_id: int, uri: str):
+            return False
 
-        yield from scraper_class.site_iterator(choose, 1, 10000)
+        yield from scraper_class.site_url_generator(
+            choose, THREADS_DISCOVERY_HTTP_CLIENT)
 
         # print("discovery_runner startup")
         # site_iter = scraper_class.site_iterator(None, 1, 10000)
