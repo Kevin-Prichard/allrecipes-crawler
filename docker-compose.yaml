@@ -15,8 +15,8 @@ services:
 #      MONGO_INITDB_ROOT_PASSWORD: password
     networks:
       - recipes-net
-    expose:
-      - "27017"
+#    expose:
+#      - "27017"
     ports:
       - "27017:27017"
     volumes:

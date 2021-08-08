@@ -4,7 +4,7 @@ import random
 import re
 import threading
 
-import requests
+from pymongo import MongoClient
 from requests.packages.urllib3.util import Url
 import sys
 import time
@@ -18,12 +18,14 @@ from datastore import RecipeStore, EmptyQueueException
 import json
 from recipe_scrapers import scrape_me
 from recipe_scrapers._abstract import AbstractScraper
-
+import requests_cache
+from requests_cache.backends.sqlite import DbCache
+# from requests_cache.backends.mongo import MongoCache
 
 # https://www.madelyneriksen.com/blog/simple-concurrency-python-multiprocessing
 
-THREADS_DISCOVERY_HTTP_CLIENT = 10
-THREADS_FETCH_HTTP_DOC = 10
+THREADS_DISCOVERY_HTTP_CLIENT = 4
+THREADS_FETCH_HTTP_DOC = 4
 
 logging.basicConfig()
 logger = logging.getLogger(__name__)
@@ -39,6 +41,22 @@ class CrawlCoordinator:
         self._should_process_recipe = should_process_recipe
         self.scraper_classes = scraper_classes
         self.store = RecipeStore.instance
+        # https://requests-cache.readthedocs.io/
+        # mongo_conn = MongoClient()
+        # mongo_http_cache = MongoCache(db_name='http_cache', connection=mongo_conn)
+
+        sqlite_cache = DbCache(db_path='./requests_cache.sqlite')
+        requests_cache.install_cache(
+            cache_name='http_cache',
+            backend=sqlite_cache,
+            expire_after=-1,
+            allowable_codes=(200, 301)
+        )
+
+        # requests_cache.install_cache('demo_cache')
+
+        # self.requests_session = requests_cache.CachedSession(
+        #     backend=sqlite_cache, expire_after=-1)
 
     def start(self):
         thread_scrape = Thread(target=self._run_scrape)
@@ -158,17 +176,18 @@ class CrawlCoordinator:
                     # print("_start_discovery 4 "+str(item))
                     # except StopIteration:
 
-                found_ids = sorted(found_ids)
-                for i in range(0, 9999):
-                    if found_ids[i] != i + 1:
-                        import pudb; pu.db
+                # found_ids = sorted(found_ids)
+                # for i in range(0, 9999):
+                #     if found_ids[i] != i + 1:
+                #         import pudb; pu.db
                 return
 
     def discovery_runner(self, scraper_class):
         # def choose(recipe_id: int, uri: str):
         #     return False
 
-        yield from scraper_class.site_url_generator(
+        yield from scraper_class.site_urls(
+            # self.requests_session,
             should_exclude_recipe=lambda uri: self.store.is_enqueued(uri) or
                                               self.store.have_recipe(uri),
             recipe_check_threads=THREADS_DISCOVERY_HTTP_CLIENT,
