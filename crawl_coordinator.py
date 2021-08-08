@@ -24,11 +24,14 @@ from requests_cache.backends.sqlite import DbCache
 
 # https://www.madelyneriksen.com/blog/simple-concurrency-python-multiprocessing
 
-THREADS_DISCOVERY_HTTP_CLIENT = 4
-THREADS_FETCH_HTTP_DOC = 4
+THREADS_DISCOVERY_HTTP_CLIENT = 8
+THREADS_FETCH_HTTP_DOC = 5
 
 logging.basicConfig()
 logger = logging.getLogger(__name__)
+
+import sys
+sys.setrecursionlimit(250)
 
 
 class CrawlCoordinator:
@@ -88,17 +91,28 @@ class CrawlCoordinator:
         if self.store.have_recipe(recipe_uri):
             logger.warning("Skipping2 %s" % str(recipe_uri))
             return
-        recipe = scrape_me(str(recipe_uri))
-        d = recipe.to_dict(unitized=True, uri=str(recipe_uri))
-        if d['canonical_url'] != str(recipe_uri):
-            raise ValueError(
-                "Found unmatching uri, d['canonical_url'] != str(recipe_uri) "
-                f"-> %s '{d['canonical_url']}' != '{str(recipe_uri)}'")
-        d['domain'] = recipe_uri.hostname
-        # print("Recipe scraped: %s (%d)" % (recipe_uri, len(json.dumps(d))))
-        result = self.store.upsert_recipe(d)
-        self.store.dequeue_finish(recipe_uri)
-        # print("Recipe upsert result: %s" % str(result.raw_result))
+        tries_left = 10
+        recipe = None
+        while tries_left > 0:
+            try:
+                recipe = scrape_me(str(recipe_uri))
+                break
+            except BaseException as efef:
+                logger.error("Error in scrape_me: %s", efef)
+                tries_left -= 1
+                time.sleep(3)
+
+        if recipe is not None:
+            d = recipe.to_dict(unitized=True, uri=str(recipe_uri))
+            if d['canonical_url'] != str(recipe_uri):
+                logger.error(
+                    "Found unmatching uri, d['canonical_url'] != str(recipe_uri) "
+                    f"-> %s '{d['canonical_url']}' != '{str(recipe_uri)}'")
+            d['domain'] = recipe_uri.hostname
+            # print("Recipe scraped: %s (%d)" % (recipe_uri, len(json.dumps(d))))
+            result = self.store.upsert_recipe(d)
+            self.store.dequeue_finish(recipe_uri)
+            # print("Recipe upsert result: %s" % str(result.raw_result))
 
     def _scrape_target_generator(self):
         while True:
