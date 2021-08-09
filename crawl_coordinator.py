@@ -1,4 +1,6 @@
+import datetime
 import logging
+from logging import Logger
 import multiprocessing.dummy as mp
 import random
 import re
@@ -24,15 +26,32 @@ from requests_cache.backends.sqlite import DbCache
 
 # https://www.madelyneriksen.com/blog/simple-concurrency-python-multiprocessing
 
-THREADS_DISCOVERY_HTTP_CLIENT = 8
-THREADS_FETCH_HTTP_DOC = 5
+THREADS_DISCOVERY_HTTP_CLIENT = 1
+THREADS_FETCH_HTTP_DOC = 1
 
-logging.basicConfig()
-logger = logging.getLogger(__name__)
+# https://stackoverflow.com/questions/13733552/logger-configuration-to-log-to-file-and-print-to-stdout
+logFormatter = logging.Formatter(
+    "%(asctime)s [%(threadName)-12.12s] [%(levelname)-5.5s]  %(message)s")
+rootLogger = logging.getLogger()
 
-import sys
+logPath = "./logs"
+fileName = datetime.datetime.now().strftime("crawler_%Y%m%d-%H%M%S")
+fileHandler = logging.FileHandler(f"{logPath}/{fileName}.log")
+fileHandler.setFormatter(logFormatter)
+rootLogger.addHandler(fileHandler)
+
+consoleHandler = logging.StreamHandler()
+consoleHandler.setFormatter(logFormatter)
+rootLogger.addHandler(consoleHandler)
+logger = rootLogger
+
 sys.setrecursionlimit(250)
 
+SPAM_RECIPE_TITLES = [
+    # As of 2021-8-8 there are over 36,410 spam-advert recipes on this site,
+    # all having commercial food brandname "Johnsonville" in the title.
+    re.compile(r".*johnsonville.*", re.I),
+]
 
 class CrawlCoordinator:
 
@@ -44,6 +63,8 @@ class CrawlCoordinator:
         self._should_process_recipe = should_process_recipe
         self.scraper_classes = scraper_classes
         self.store = RecipeStore.instance
+        logger.info("Database start: %s", self.store._db_stats_report())
+        self.store.setLogger(logger)
         # https://requests-cache.readthedocs.io/
         # mongo_conn = MongoClient()
         # mongo_http_cache = MongoCache(db_name='http_cache', connection=mongo_conn)
@@ -53,7 +74,7 @@ class CrawlCoordinator:
             cache_name='http_cache',
             backend=sqlite_cache,
             expire_after=-1,
-            allowable_codes=(200, 301)
+            allowable_codes=(200, 301, 404)
         )
 
         # requests_cache.install_cache('demo_cache')
@@ -96,6 +117,13 @@ class CrawlCoordinator:
         while tries_left > 0:
             try:
                 recipe = scrape_me(str(recipe_uri))
+                if recipe:
+                    title = recipe.title()
+                    for pat in SPAM_RECIPE_TITLES:
+                        if pat.match(title):
+                            import pudb; pu.db
+                            recipe = None
+                            break
                 break
             except BaseException as efef:
                 logger.error("Error in scrape_me: %s", efef)
@@ -156,13 +184,13 @@ class CrawlCoordinator:
                         #       str(type(recipe_permalink)))
                         # mutex.acquire()
                         try:
-                            recipe_id = RECIPE_ID_REGEX.match(
-                                str(recipe_permalink)).groups()[0]
+                            # recipe_id = RECIPE_ID_REGEX.match(
+                            #     str(recipe_permalink)).groups()[0]
                             self.store.enqueue(recipe_permalink)
                             # recipe = scrape_me(str(recipe_permalink))
                             # recipe_dumpus = json.dumps(recipe.to_dict())
                             # print(f"Fetched JSON: {recipe_permalink}")
-                            found_ids.append(int(recipe_id))
+                            # found_ids.append(int(recipe_id))
                             urls_counted += 1
                             # print("_start_discovery ...3 " +
                             #       str(an_item) + "    " + str(urls_counted))
@@ -181,7 +209,7 @@ class CrawlCoordinator:
                                     recipe_permalink,
                                 ))
                         except Exception as eeee:
-                            print("Exceptioni encountered: %s" %
+                            print("Exception encountered: %s" %
                                   str(recipe_permalink), eeee)
                         # finally:
                             # mutex.release()

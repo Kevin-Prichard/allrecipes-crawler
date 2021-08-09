@@ -6,6 +6,7 @@ from threading import Thread, Lock
 from requests.packages.urllib3.util import Url
 from requests.packages.urllib3.util import parse_url
 import logging
+from logging import Logger
 
 import pymongo
 from pymongo import MongoClient
@@ -37,7 +38,7 @@ class RecipeStore:
         # import pudb; pu.db
         self._mdb = MongoClient()
         self._ensure_existence()
-        logger.info("Database start: %s", self._db_stats_report())
+        self._logger = None
 
     @classproperty
     def instance(cls) -> 'RecipeStore':
@@ -51,6 +52,9 @@ class RecipeStore:
             finally:
                 mutex.release()
         return cls._instance
+
+    def setLogger(self, logger: Logger):
+        self._logger = logger
 
     @classmethod
     def _get_indices(cls, coll):
@@ -108,17 +112,18 @@ class RecipeStore:
         if not found or found.count() == 0:
             return False
         if found.count() > 1:
-            logger.warning("Found more than one recipe for %s", recipe_uri)
+            self._logger.warning("Found more than one recipe for %s",
+                                 recipe_uri)
         return True
 
     def upsert_recipe(self, recipe):
         uri = recipe['canonical_url']
         # print("upsert_recipe: %s" % uri)
         if self.have_recipe(uri):
-            logger.warning("Updating existing recipe: %s" % uri)
+            self._logger.warning("Updating existing recipe: %s" % uri)
         result = self._recipe.replace_one(
             {"canonical_url": uri}, recipe, upsert=True)
-        print("upsert_recipeed: %s" % uri)
+        self._logger.info("upsert_recipeed: %s", uri)
         return result
 
     def is_enqueued(self, recipe_uri: Url, recipe_id: int = None) -> bool:
@@ -137,21 +142,20 @@ class RecipeStore:
         entry = None
         now = dt.now()
         tries_left = 10
-        while entry is None:
+        while entry is None and tries_left > 0:
             # entry = self._queue.find_one({
             #     "$query": {"state": "wait", "ts": {"$lt": now.timestamp() + 1}},
             #     "_addSpecial": {"$orderBy": {"ts": 1}}}
             # )
             mutex.acquire(blocking=True, timeout=3)
-            entries = self._queue.find({"state": "wait"})
-            entries.sort("ts")
+            entries = (self._queue
+                           .find({"state": "wait"})
+                           .sort("ts", pymongo.ASCENDING)
+                           .limit(1))
             # {"state": "wait", "ts": {"$gt": now}})
             if entries is None or entries.count() == 0:
-                if tries_left > 0:
-                    now += td(seconds=1)
-                    tries_left -= 1
-                else:
-                    break
+                now += td(seconds=1)
+                tries_left -= 1
             else:
                 entry = entries[0]
 
@@ -171,7 +175,7 @@ class RecipeStore:
             # self._action.insert_one({
             #     "uri": str(entry['recipe_uri']), "ts": now,
             #     "act": "dequeue_miss(%d)" % queue_size})
-            logger.debug("dequeue_miss with known %s entries" % json.dumps(
+            self._logger.debug("dequeue_miss with known %s entries" % json.dumps(
                 list(queue_status)))
             if not queue_size:
                 raise EmptyQueueException("Found zero entries in queue")
@@ -182,8 +186,8 @@ class RecipeStore:
         count0 = self._queue.find({"uri": str(recipe_uri)}).count()
         res = self._queue.delete_one({"uri": str(recipe_uri)})
         count1 = self._queue.find({"uri": str(recipe_uri)}).count()
-        # print("DEQUEUE RESULT 0: %s, count0: %s, count1: %s",
-        #       str(res.raw_result), count0, count1)
+        logger.info("DEQUEUE RESULT 0: %s, count0: %s, count1: %s",
+              str(res.raw_result), count0, count1)
         self._action.insert_one({"uri": str(recipe_uri), "ts": now, "act":
             "finish"})
         # print("DEQUEUE RESULT 1: ")
