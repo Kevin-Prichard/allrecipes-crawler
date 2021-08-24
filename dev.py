@@ -13,8 +13,9 @@ from requests.packages.urllib3.util import Url
 
 def main():
     # cProfile.run('CrawlCoordinator([AllRecipes]).start()')
-    coordinator = CrawlCoordinator([AllRecipes], lambda: True, lambda: True)
-    coordinator.start()
+    coordinator = CrawlCoordinator(
+        [AllRecipes], lambda uri: True, lambda uri: True)
+    coordinator.start_crawl()
 
     # a = scrape_me("https://www.allrecipes.com/recipe/12345/jeff-davis-pie-i/",
     #               proxies={"http": "http://127.0.0.1:3128",

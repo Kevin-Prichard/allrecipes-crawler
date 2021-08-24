@@ -42,17 +42,13 @@ class PullSomeStats:
         self.time_start = time.time()
 
     def titles_gen(self):
-        x = self._recipe.find({
-            "title": {
-                "$not": {
-                    "$regex": r"/johnsonville/i"
-                }
-            }
-        },
-        {"title": 1, "_id": 0})
-        # x = self._recipe.find({}, {"title": 1, "_id": 0})
-        # import pudb; pu.db
+        x = self._recipe.distinct("title",
+            {"title": {"$not": re.compile(r".*johnsonville.*", re.I)}})
         return x
+        # x = self._recipe.find(
+        #     {"title": {"$not": re.compile(r".*johnsonville.*", re.I)}},
+        #     {"title": 1, "_id": 0})
+        # return x
 
     def title_pop_words(self):
         wordset = dd(int)
@@ -60,8 +56,7 @@ class PullSomeStats:
         words_counted = 0
         recipe_title_iter = self.titles_gen()
 
-        for _title in recipe_title_iter:
-            title = _title.get('title', None)
+        for title in recipe_title_iter:
             if not title:
                 continue
             words = WORD_SPLIT_REGEX.split(title)

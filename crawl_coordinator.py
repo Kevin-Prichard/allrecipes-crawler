@@ -1,35 +1,28 @@
 import datetime
 import logging
-from logging import Logger
 import multiprocessing.dummy as mp
-import random
 import re
 import threading
 
-from pymongo import MongoClient
 from requests.packages.urllib3.util import Url
 import sys
 import time
 from typing import List, Callable
 from threading import Thread, Lock
-from simple_classproperty import classproperty
 
 mutex = Lock()
 
 from datastore import RecipeStore, EmptyQueueException
-import json
 from recipe_scrapers import scrape_me
 from recipe_scrapers._abstract import AbstractScraper
 import requests_cache
 from requests_cache.backends.sqlite import DbCache
-# from requests_cache.backends.mongo import MongoCache
 
 # https://www.madelyneriksen.com/blog/simple-concurrency-python-multiprocessing
 
 THREADS_DISCOVERY_HTTP_CLIENT = 1
 THREADS_FETCH_HTTP_DOC = 1
 
-# https://stackoverflow.com/questions/13733552/logger-configuration-to-log-to-file-and-print-to-stdout
 logFormatter = logging.Formatter(
     "%(asctime)s [%(threadName)-12.12s] [%(levelname)-5.5s]  %(message)s")
 rootLogger = logging.getLogger()
@@ -48,16 +41,18 @@ logger = rootLogger
 sys.setrecursionlimit(250)
 
 SPAM_RECIPE_TITLES = [
-    # As of 2021-8-8 there are over 36,410 spam-advert recipes on this site,
-    # all having commercial food brandname "Johnsonville" in the title.
+    # As of 2021-8-8 there are over 36,410 spammy-looking recipes on
+    # this site, all having commercial food brandname "Johnsonville" in the
+    # title.
     re.compile(r".*johnsonville.*", re.I),
 ]
+
 
 class CrawlCoordinator:
 
     def __init__(self,
                  scraper_classes: List[type(AbstractScraper)],
-                 should_process_recipe: Callable[[Url], None],
+                 should_process_recipe: Callable[[Url], bool],
                  process_recipe: Callable[[Url], bool],
                  ):
         self._should_process_recipe = should_process_recipe
@@ -65,31 +60,23 @@ class CrawlCoordinator:
         self.store = RecipeStore.instance
         logger.info("Database start: %s", self.store._db_stats_report())
         self.store.setLogger(logger)
-        # https://requests-cache.readthedocs.io/
-        # mongo_conn = MongoClient()
-        # mongo_http_cache = MongoCache(db_name='http_cache', connection=mongo_conn)
 
+        # https://requests-cache.readthedocs.io/
         sqlite_cache = DbCache(db_path='./requests_cache.sqlite')
         requests_cache.install_cache(
             cache_name='http_cache',
             backend=sqlite_cache,
-            expire_after=-1,
-            allowable_codes=(200, 301, 404)
+            expire_after=-1,  # never expire
+            allowable_codes=(200, 301, 404)  # cache responses for these codes
         )
 
-        # requests_cache.install_cache('demo_cache')
-
-        # self.requests_session = requests_cache.CachedSession(
-        #     backend=sqlite_cache, expire_after=-1)
-
-    def start(self):
+    def start_crawl(self):
         thread_scrape = Thread(target=self._run_scrape)
         thread_scrape.start()
 
         thread_discovery = Thread(target=self._run_discovery)
         thread_discovery.start()
         # thread_discovery.setDaemon(True)
-
 
         thread_discovery.join()
         thread_scrape.join()
@@ -98,17 +85,15 @@ class CrawlCoordinator:
 
         with mp.Pool(THREADS_FETCH_HTTP_DOC) as scrape_pool:
             scrape_iterator = scrape_pool.imap_unordered(
-                self._scrape, self._scrape_target_generator()
+                self._scrape_one, self._scrape_target_generator()
             )
             try:
                 while True:
                     result = next(scrape_iterator)
-                    # print(result)
             except StopIteration:
                 print("_run_scrape: done scraping")
 
-    def _scrape(self, recipe_uri: Url):
-        # print("Recipe scrape: %s" % str(recipe_uri))
+    def _scrape_one(self, recipe_uri: Url):
         if self.store.have_recipe(recipe_uri):
             logger.warning("Skipping2 %s" % str(recipe_uri))
             return
@@ -117,11 +102,10 @@ class CrawlCoordinator:
         while tries_left > 0:
             try:
                 recipe = scrape_me(str(recipe_uri))
-                if recipe:
+                if recipe and recipe.title():
                     title = recipe.title()
                     for pat in SPAM_RECIPE_TITLES:
                         if pat.match(title):
-                            import pudb; pu.db
                             recipe = None
                             break
                 break
@@ -222,17 +206,22 @@ class CrawlCoordinator:
                 # for i in range(0, 9999):
                 #     if found_ids[i] != i + 1:
                 #         import pudb; pu.db
-                return
+                logger.warn("dpool.close() 0")
+                dpool.close()
+                logger.warn("dpool.close() 1")
+                logger.warn("dpool.join() 0")
+                dpool.join()
+                logger.warn("dpool.join() 1")
 
     def discovery_runner(self, scraper_class):
         # def choose(recipe_id: int, uri: str):
         #     return False
 
-        yield from scraper_class.site_urls(
+        yield from scraper_class.sitemap_iter(
             # self.requests_session,
-            should_exclude_recipe=lambda uri: self.store.is_enqueued(uri) or
-                                              self.store.have_recipe(uri),
-            recipe_check_threads=THREADS_DISCOVERY_HTTP_CLIENT,
+            recipe_check_fn=lambda uri, rid: self.store.is_enqueued(uri) or
+                                             self.store.have_recipe(uri),
+            threadcount=THREADS_DISCOVERY_HTTP_CLIENT,
         )
 
         # print("discovery_runner startup")
