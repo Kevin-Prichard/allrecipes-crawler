@@ -1,4 +1,5 @@
 import datetime
+import json
 import logging
 import multiprocessing.dummy as mp
 import re
@@ -10,21 +11,21 @@ import time
 from typing import List, Callable
 from threading import Thread, Lock
 
-mutex = Lock()
-
 from datastore import RecipeStore, EmptyQueueException
 from recipe_scrapers import scrape_me
 from recipe_scrapers._abstract import AbstractScraper
 import requests_cache
 from requests_cache.backends.sqlite import DbCache
 
-# https://www.madelyneriksen.com/blog/simple-concurrency-python-multiprocessing
+mutex = Lock()
+
 
 THREADS_DISCOVERY_HTTP_CLIENT = 1
 THREADS_FETCH_HTTP_DOC = 1
 
 logFormatter = logging.Formatter(
-    "%(asctime)s [%(threadName)-12.12s] [%(levelname)-5.5s]  %(message)s")
+    "%(asctime)s [%(threadName)-12.12s] [%(levelname)-5.5s]  %(message)s"
+)
 rootLogger = logging.getLogger()
 
 logPath = "./logs"
@@ -49,25 +50,25 @@ SPAM_RECIPE_TITLES = [
 
 
 class CrawlCoordinator:
-
-    def __init__(self,
-                 scraper_classes: List[type(AbstractScraper)],
-                 should_process_recipe: Callable[[Url], bool],
-                 process_recipe: Callable[[Url], bool],
-                 ):
+    def __init__(
+        self,
+        scraper_classes: List[type(AbstractScraper)],
+        should_process_recipe: Callable[[Url], bool],
+        process_recipe: Callable[[Url], bool],
+    ):
         self._should_process_recipe = should_process_recipe
-        self.scraper_classes = scraper_classes
+        self.scrapers = scraper_classes
         self.store = RecipeStore.instance
         logger.info("Database start: %s", self.store._db_stats_report())
         self.store.setLogger(logger)
 
         # https://requests-cache.readthedocs.io/
-        sqlite_cache = DbCache(db_path='./requests_cache.sqlite')
+        sqlite_cache = DbCache(db_path="./requests_cache.sqlite")
         requests_cache.install_cache(
-            cache_name='http_cache',
+            cache_name="http_cache",
             backend=sqlite_cache,
             expire_after=-1,  # never expire
-            allowable_codes=(200, 301, 404)  # cache responses for these codes
+            allowable_codes=(200, 301, 404),  # cache responses for these codes
         )
 
     def start_crawl(self):
@@ -89,13 +90,13 @@ class CrawlCoordinator:
             )
             try:
                 while True:
-                    result = next(scrape_iterator)
+                    next(scrape_iterator)
             except StopIteration:
                 print("_run_scrape: done scraping")
 
     def _scrape_one(self, recipe_uri: Url):
         if self.store.have_recipe(recipe_uri):
-            logger.warning("Skipping2 %s" % str(recipe_uri))
+            logger.warning("Skipping2 %s", str(recipe_uri))
             return
         tries_left = 10
         recipe = None
@@ -116,15 +117,18 @@ class CrawlCoordinator:
 
         if recipe is not None:
             d = recipe.to_dict(unitized=True, uri=str(recipe_uri))
-            if d['canonical_url'] != str(recipe_uri):
+            if d["canonical_url"] != str(recipe_uri):
                 logger.error(
-                    "Found unmatching uri, d['canonical_url'] != str(recipe_uri) "
-                    f"-> %s '{d['canonical_url']}' != '{str(recipe_uri)}'")
-            d['domain'] = recipe_uri.hostname
-            # print("Recipe scraped: %s (%d)" % (recipe_uri, len(json.dumps(d))))
+                    "Found unmatching uri, d['canonical_url'] != recipe_uri "
+                    f"-> %s '{d['canonical_url']}' != '{str(recipe_uri)}'"
+                )
+            d["domain"] = recipe_uri.hostname
+            logger.debug(
+                "Recipe scraped: %s (%d)", recipe_uri, len(json.dumps(d))
+            )
             result = self.store.upsert_recipe(d)
             self.store.dequeue_finish(recipe_uri)
-            # print("Recipe upsert result: %s" % str(result.raw_result))
+            logger.debug("Recipe upsert result: %s", str(result.raw_result))
 
     def _scrape_target_generator(self):
         while True:
@@ -138,103 +142,71 @@ class CrawlCoordinator:
                 time.sleep(0.1)
 
     def _run_discovery(self):
-        # site_explorers = [RecipeSiteUrlIterator(klass)
-        #                   for klass in self.scraper_classes]
-        # sites_completed = 0
         urls_counted = 0
+        logging_fmt = "Status: urls_counted: " "%s -- %s -- th:%s -- %s"
 
-        with mp.Pool(
-                THREADS_FETCH_HTTP_DOC * len(self.scraper_classes)) as dpool:
-            RECIPE_ID_REGEX = re.compile(r".*/recipe/(\d+)/[a-z0-9_\-.]+/?$",
-                                         re.I)
-            found_ids = []
+        with mp.Pool(THREADS_FETCH_HTTP_DOC * len(self.scrapers)) as dpool:
             site_iterator = dpool.imap_unordered(
-                self.discovery_runner,
-                self.scraper_classes)
+                self.discovery_runner, self.scrapers
+            )
 
             try:
                 while True:
-                    print("_start_discovery ...1")
+                    logger.debug("_start_discovery 1")
                     permalink_block = next(site_iterator)
-                    print("_start_discovery ...1 ", str(permalink_block))
+                    logger.debug("_start_discovery 1 ", str(permalink_block))
                     while True:
-                        # print("_start_discovery ...2")
-                        recipe_permalink = next(permalink_block)
-                        if not recipe_permalink:
-                            print("_run_discovery: recipe_permalink is None, "
-                                  "continueing")
+                        recipe_uri = next(permalink_block)
+                        if not recipe_uri:
+                            logger.debug(
+                                "_run_discovery: recipe_uri is "
+                                "None, continueing"
+                            )
                             continue
-                        # print("_run_discovery: recipe_permalink type: %s" %
-                        #       str(type(recipe_permalink)))
-                        # mutex.acquire()
+                        logger.debug(
+                            "_run_discovery: recipe_uri type: %s",
+                            str(type(recipe_uri)),
+                        )
                         try:
-                            # recipe_id = RECIPE_ID_REGEX.match(
-                            #     str(recipe_permalink)).groups()[0]
-                            self.store.enqueue(recipe_permalink)
-                            # recipe = scrape_me(str(recipe_permalink))
-                            # recipe_dumpus = json.dumps(recipe.to_dict())
-                            # print(f"Fetched JSON: {recipe_permalink}")
-                            # found_ids.append(int(recipe_id))
+                            self.store.enqueue(recipe_uri)
                             urls_counted += 1
-                            # print("_start_discovery ...3 " +
-                            #       str(an_item) + "    " + str(urls_counted))
                             if urls_counted / 10 == int(urls_counted / 10):
-                                # sys.stderr.write(
-                                fmt = ("Status: urls_counted: "
-                                       "%s -- %s -- th:%s -- %s")
-                                stat = self.store._queue.aggregate([
-                                    {"$group": {"_id": "$state",
-                                                "count": {"$sum": 1}}}])
-                                print(fmt % (
+                                stat = list(
+                                    self.store._queue.aggregate(
+                                        [
+                                            {
+                                                "$group": {
+                                                    "_id": "$state",
+                                                    "count": {"$sum": 1},
+                                                }
+                                            }
+                                        ]
+                                    )
+                                )
+                                logger.debug(
+                                    logging_fmt,
                                     str(urls_counted),
-                                    str(sorted(list(stat),
-                                               key=lambda a: a['_id'])),
+                                    str(sorted(stat, key=lambda a: a["_id"])),
                                     str(threading.active_count()),
-                                    recipe_permalink,
-                                ))
+                                    recipe_uri,
+                                )
                         except Exception as eeee:
-                            print("Exception encountered: %s" %
-                                  str(recipe_permalink), eeee)
-                        # finally:
-                            # mutex.release()
-            except StopIteration as ee:
-                print("_start_discovery: StopIteration")
-                    # print("_start_discovery 4 "+str(item))
-                    # except StopIteration:
+                            logger.exception(
+                                "Exc _run_discovery: %s", str(recipe_uri), eeee
+                            )
+            except StopIteration:
+                logger.debug("_start_discovery: StopIteration")
 
-                # found_ids = sorted(found_ids)
-                # for i in range(0, 9999):
-                #     if found_ids[i] != i + 1:
-                #         import pudb; pu.db
-                logger.warn("dpool.close() 0")
+                logger.debug("dpool.close() 0")
                 dpool.close()
-                logger.warn("dpool.close() 1")
-                logger.warn("dpool.join() 0")
+                logger.debug("dpool.close() 1")
+                logger.debug("dpool.join() 0")
                 dpool.join()
-                logger.warn("dpool.join() 1")
+                logger.debug("dpool.join() 1")
 
     def discovery_runner(self, scraper_class):
-        # def choose(recipe_id: int, uri: str):
-        #     return False
-
         yield from scraper_class.sitemap_iter(
-            # self.requests_session,
-            recipe_check_fn=lambda uri, rid: self.store.is_enqueued(uri) or
-                                             self.store.have_recipe(uri),
+            recipe_check_fn=lambda uri, rid: self.store.is_enqueued(uri)
+            or self.store.have_recipe(uri),
             threadcount=THREADS_DISCOVERY_HTTP_CLIENT,
         )
-
-        # print("discovery_runner startup")
-        # site_iter = scraper_class.site_iterator(None, 1, 10000)
-        # print("discovery_runner site_iter: "+str(site_iter))
-        """
-        try:
-            while True:
-                # print("d-r...")
-                recipe_url = next(site_iter)
-                # print("d-r: ... recipe_url = " + str(recipe_url))
-                yield recipe_url
-        except StopIteration:
-            print("discovery_runner StopIteration")
-            return
-        """

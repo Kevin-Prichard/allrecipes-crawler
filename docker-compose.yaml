@@ -15,8 +15,6 @@ services:
 #      MONGO_INITDB_ROOT_PASSWORD: password
     networks:
       - recipes-net
-#    expose:
-#      - "27017"
     ports:
       - "27017:27017"
     volumes:
@@ -43,10 +41,6 @@ services:
     links:
       - mongo
 
-      #    entrypoint:
-      #      python3 /opt/app-root/src/allrecipes-crawler/do_thing.py /opt/app-root/src/allrecipes-crawler/docker-compose.yaml-23-skidoo ABC
-          # watchmedo auto-restart --recursive --pattern="*.py" --directory="." python3 /opt/app-root/src/allrecipes-crawler/do_thing.py /opt/app-root/src/allrecipes-crawler/docker-compose.yaml-23-skidoo ABC
-
   prod:
     container_name: crawler
     build:
@@ -60,48 +54,10 @@ services:
 #    volumes:
 #      - ./:/opt/app-root/src/app
     command:
-#      python3 /opt/app-root/src/app/do_thing.py /opt/app-root/src/app/docker-compose.yaml-23-skidoo ABC
       python3 -c 'import sys; print("\n".join(sys.modules))' >> /tmp/python_mods.log
     links:
       - mongo
 
-  squid:
-    container_name: squid
-    image: sameersbn/squid:3.5.27-2
-    restart: always
-    expose:
-      - "3128"
-    ports:
-      - "3128:3128"
-    volumes:
-      - /Users/kev/var/spool/squid/cache:/var/spool/squid
-      - /Users/kev/projs/recipe-crawler/squid.conf:/etc/squid/squid.conf
-#    networks:
-#      - recipes-net
-
-#  dev-proxy:
-#    image: jwilder/nginx-proxy
-#    restart: always
-#    networks:
-#      - recipes-net
-#    volumes:
-#      - /var/run/docker.sock:/tmp/docker.sock:ro
-#    expose:
-#      - "443"
-#    ports:
-#      - "6969:80"
-
 networks:
   recipes-net:
     driver: bridge
-
-
-#db.createUser( { user: "root",
-#          pwd: "",
-#          roles: [ "userAdminAnyDatabase",
-#                   "dbAdminAnyDatabase",
-#                   "readWriteAnyDatabase"
-#
-#] } )
-#
-#openssl rand -base64 48
